@@ -12,9 +12,11 @@ import org.springframework.stereotype.Service;
 public class LogoutService implements LogoutHandler {
 
     private final TokenRepository tokenRepository;
+    private final TokenService tokenService;
 
-    public LogoutService(TokenRepository tokenRepository) {
+    public LogoutService(TokenRepository tokenRepository, TokenService tokenService) {
         this.tokenRepository = tokenRepository;
+        this.tokenService = tokenService;
     }
 
     @Override
@@ -24,17 +26,29 @@ public class LogoutService implements LogoutHandler {
             Authentication authentication
     ) {
         final String authHeader = request.getHeader("Authorization");
-        final String jwt;
-        if (authHeader == null ||!authHeader.startsWith("Bearer ")) {
+        final String tokenValue;
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             return;
         }
-        jwt = authHeader.substring(7);
-        var storedToken = tokenRepository.findByToken(jwt)
+        tokenValue = authHeader.substring(7);
+        var storedToken = tokenRepository.findByToken(tokenValue)
                 .orElse(null);
         if (storedToken != null) {
             storedToken.setExpired(true);
             storedToken.setRevoked(true);
             tokenRepository.save(storedToken);
+            tokenService.evictToken(tokenValue);
+
+            // Also revoke all other active tokens for the user
+            var user = storedToken.getUser();
+            var validUserTokens = tokenRepository.findAllValidTokenByUser(user.getId());
+            validUserTokens.forEach(t -> {
+                t.setExpired(true);
+                t.setRevoked(true);
+                tokenService.evictToken(t.getToken());
+            });
+            tokenRepository.saveAll(validUserTokens);
+
             SecurityContextHolder.clearContext();
         }
     }

@@ -20,12 +20,26 @@ repositories {
     mavenCentral()
 }
 
+configurations.all {
+    resolutionStrategy {
+        force 'com.fasterxml.jackson.core:jackson-annotations:2.21'
+        force 'com.fasterxml.jackson.core:jackson-core:2.21.2'
+        force 'com.fasterxml.jackson.core:jackson-databind:2.21.2'
+    }
+}
+
 ext {
     set('springCloudGcpVersion', "8.0.3")
     set('springCloudVersion', "2025.1.1")
+    set('jackson-2-bom.version', "2.21.2")
 }
 
 dependencies {
+
+    implementation 'org.springframework.boot:spring-boot-starter-json'
+    implementation 'org.springframework.boot:spring-boot-starter-cache'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.jspecify:jspecify'
     implementation 'org.springframework.boot:spring-boot-starter-batch'
     implementation 'org.springframework.boot:spring-boot-starter-batch-jdbc'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
@@ -37,9 +51,6 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-mail'
     implementation 'org.springframework.boot:spring-boot-starter-quartz'
     implementation 'org.springframework.boot:spring-boot-starter-security'
-    implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
-    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
-    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'com.google.cloud:spring-cloud-gcp-starter'
     implementation 'com.google.cloud:spring-cloud-gcp-starter-pubsub'
@@ -71,6 +82,13 @@ dependencyManagement {
     imports {
         mavenBom "com.google.cloud:spring-cloud-gcp-dependencies:${springCloudGcpVersion}"
         mavenBom "org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}"
+    }
+    dependencies {
+        dependency 'com.fasterxml.jackson.core:jackson-annotations:2.21'
+        dependency 'com.fasterxml.jackson.core:jackson-core:2.21.2'
+        dependency 'com.fasterxml.jackson.core:jackson-databind:2.21.2'
+        dependency 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.21.2'
+        dependency 'com.fasterxml.jackson.dataformat:jackson-dataformat-xml:2.21.2'
     }
 }
 

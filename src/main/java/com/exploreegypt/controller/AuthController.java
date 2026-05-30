@@ -9,7 +9,7 @@ import com.exploreegypt.entity.User;
 import com.exploreegypt.repository.TokenRepository;
 import com.exploreegypt.repository.UserRepository;
 import com.exploreegypt.security.CustomUserDetails;
-import com.exploreegypt.security.JwtService;
+import com.exploreegypt.security.TokenService;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -23,24 +23,24 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/api")
 public class AuthController {
 
     private final UserRepository userRepository;
     private final TokenRepository tokenRepository;
     private final PasswordEncoder passwordEncoder;
-    private final JwtService jwtService;
+    private final TokenService tokenService;
     private final AuthenticationManager authenticationManager;
 
-    public AuthController(UserRepository userRepository, TokenRepository tokenRepository, PasswordEncoder passwordEncoder, JwtService jwtService, AuthenticationManager authenticationManager) {
+    public AuthController(UserRepository userRepository, TokenRepository tokenRepository, PasswordEncoder passwordEncoder, TokenService tokenService, AuthenticationManager authenticationManager) {
         this.userRepository = userRepository;
         this.tokenRepository = tokenRepository;
         this.passwordEncoder = passwordEncoder;
-        this.jwtService = jwtService;
+        this.tokenService = tokenService;
         this.authenticationManager = authenticationManager;
     }
 
-    @PostMapping("/register")
+    @PostMapping("/guest/register")
     public ResponseEntity<AuthResponse> register(@RequestBody RegisterRequest request) {
         if (userRepository.findByEmail(request.getEmail()).isPresent() || 
             userRepository.findByUsername(request.getUsername()).isPresent()) {
@@ -56,75 +56,96 @@ public class AuthController {
         var savedUser = userRepository.save(user);
 
         var customUser = new CustomUserDetails(user);
-        var jwtToken = jwtService.generateToken(customUser);
-        var refreshToken = jwtService.generateRefreshToken(customUser);
+        var accessToken = tokenService.generateToken(customUser);
+        var refreshToken = tokenService.generateRefreshToken(customUser);
         
-        saveUserToken(savedUser, jwtToken);
+        saveUserToken(savedUser, accessToken, TokenType.BEARER);
+        saveUserToken(savedUser, refreshToken, TokenType.REFRESH);
 
         return ResponseEntity.ok(AuthResponse.builder()
-                .accessToken(jwtToken)
+                .accessToken(accessToken)
                 .refreshToken(refreshToken)
                 .build());
     }
 
-    @PostMapping("/login")
-    public ResponseEntity<AuthResponse> login(@RequestBody LoginRequest request) {
-        authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(
-                        request.getEmail(),
-                        request.getPassword()
-                )
-        );
-        User user = userRepository.findByEmail(request.getEmail())
-                .orElseThrow();
-                
-        var customUser = new CustomUserDetails(user);
-        var jwtToken = jwtService.generateToken(customUser);
-        var refreshToken = jwtService.generateRefreshToken(customUser);
-        
-        revokeAllUserTokens(user);
-        saveUserToken(user, jwtToken);
-        
-        return ResponseEntity.ok(AuthResponse.builder()
-                .accessToken(jwtToken)
-                .refreshToken(refreshToken)
-                .build());
+    @PostMapping("/guest/login")
+    public ResponseEntity<?> login(@RequestBody LoginRequest request) {
+        try {
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(
+                            request.getEmail(),
+                            request.getPassword()
+                    )
+            );
+            User user = userRepository.findByEmail(request.getEmail())
+                    .orElseThrow(() -> new RuntimeException("User not found after successful authentication"));
+                    
+            var customUser = new CustomUserDetails(user);
+            var accessToken = tokenService.generateToken(customUser);
+            var refreshToken = tokenService.generateRefreshToken(customUser);
+            
+            revokeAllUserTokens(user);
+            saveUserToken(user, accessToken, TokenType.BEARER);
+            saveUserToken(user, refreshToken, TokenType.REFRESH);
+            
+            return ResponseEntity.ok(AuthResponse.builder()
+                    .accessToken(accessToken)
+                    .refreshToken(refreshToken)
+                    .build());
+        } catch (org.springframework.security.core.AuthenticationException e) {
+            e.printStackTrace();
+            return ResponseEntity.status(401).body(java.util.Map.of(
+                "error", "Unauthorized",
+                "message", "Authentication failed: " + e.getMessage()
+            ));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body(java.util.Map.of(
+                "error", "Internal Server Error",
+                "message", "An unexpected error occurred: " + e.getMessage()
+            ));
+        }
     }
     
-    @PostMapping("/refresh")
+    @PostMapping("/guest/refresh")
     public ResponseEntity<AuthResponse> refreshToken(
             HttpServletRequest request
     ) {
         final String authHeader = request.getHeader("Authorization");
         final String refreshToken;
-        final String userEmail;
         if (authHeader == null ||!authHeader.startsWith("Bearer ")) {
             return ResponseEntity.badRequest().build();
         }
         refreshToken = authHeader.substring(7);
-        userEmail = jwtService.extractUsername(refreshToken);
-        if (userEmail != null) {
-            var user = this.userRepository.findByEmail(userEmail)
-                    .orElseThrow();
+        
+        var storedRefreshTokenOpt = tokenRepository.findByToken(refreshToken)
+                .filter(t -> t.getTokenType() == TokenType.REFRESH 
+                        && !t.isExpired() 
+                        && !t.isRevoked() 
+                        && !tokenService.isTokenExpired(refreshToken));
+                        
+        if (storedRefreshTokenOpt.isPresent()) {
+            var storedRefreshToken = storedRefreshTokenOpt.get();
+            var user = storedRefreshToken.getUser();
             var customUser = new CustomUserDetails(user);
-            if (jwtService.isTokenValid(refreshToken, customUser)) {
-                var accessToken = jwtService.generateToken(customUser);
-                revokeAllUserTokens(user);
-                saveUserToken(user, accessToken);
-                return ResponseEntity.ok(AuthResponse.builder()
-                        .accessToken(accessToken)
-                        .refreshToken(refreshToken)
-                        .build());
-            }
+            
+            var accessToken = tokenService.generateToken(customUser);
+            revokeAllUserAccessTokens(user);
+            saveUserToken(user, accessToken, TokenType.BEARER);
+            
+            return ResponseEntity.ok(AuthResponse.builder()
+                    .accessToken(accessToken)
+                    .refreshToken(refreshToken)
+                    .build());
         }
         return ResponseEntity.badRequest().build();
     }
 
-    private void saveUserToken(User user, String jwtToken) {
+    private void saveUserToken(User user, String tokenValue, TokenType tokenType) {
         var token = Token.builder()
                 .user(user)
-                .token(jwtToken)
-                .tokenType(TokenType.BEARER)
+                .token(tokenValue)
+                .tokenType(tokenType)
                 .expired(false)
                 .revoked(false)
                 .build();
@@ -138,7 +159,22 @@ public class AuthController {
         validUserTokens.forEach(token -> {
             token.setExpired(true);
             token.setRevoked(true);
+            tokenService.evictToken(token.getToken());
         });
+        tokenRepository.saveAll(validUserTokens);
+    }
+
+    private void revokeAllUserAccessTokens(User user) {
+        var validUserTokens = tokenRepository.findAllValidTokenByUser(user.getId());
+        if (validUserTokens.isEmpty())
+            return;
+        validUserTokens.stream()
+                .filter(token -> token.getTokenType() == TokenType.BEARER)
+                .forEach(token -> {
+                    token.setExpired(true);
+                    token.setRevoked(true);
+                    tokenService.evictToken(token.getToken());
+                });
         tokenRepository.saveAll(validUserTokens);
     }
 }
